@@ -1,0 +1,168 @@
+---
+title: "Final project of Practical Machine Learning course"
+author: "Delia-Lisa Feis"
+date: "16 Dezember 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Project description
+# Background
+Human Activity Recognition **- HAR -** has emerged as a key research area in the last years and is gaining increasing attention by the pervasive computing research community, especially for the development of context-aware systems. Using the dataset for this course project, my goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 healthy male participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways, i.e., exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). 
+
+For more details on the background see <http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har>.
+
+# Data
+The training data can be found here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>.
+
+The test data can be found here:  <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>.
+
+
+```{r libraries}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(randomForest)
+library(knitr)
+
+```
+
+## First step: Loading the data
+```{r getData}
+set.seed(12345)                  # set seed for reproducibility
+
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+training <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv(url(testUrl), na.strings=c("NA","#DIV/0!",""))
+
+```
+
+Partitioning the training set into training (75%) and validation set (25%):
+```{r dataPartitioning}
+trainingIndex <- createDataPartition(y=training$classe, p=0.75, list=FALSE)
+myTrainSet <- training[trainingIndex, ]            # create training set
+myValSet <- training[-trainingIndex, ]             # create validation set
+dim(myTrainSet); dim(myValSet)
+```
+
+## Data cleaning
+Remove nearZeroVariance variables
+```{r removeNZV}
+nzv <- nearZeroVar(myTrainSet, saveMetrics = TRUE)
+myTrainSet <- myTrainSet[, nzv$nzv == FALSE]
+rm(nzv); dim(myTrainSet)
+```
+
+Exclude first column which is just an ID
+```{r firstColExclusion}
+myTrainSet <- myTrainSet[c(-1)]
+
+```
+
+Remove variables with more than 70% NA values
+```{r getNAs}
+NAcols    <- sapply(myTrainSet, function(x) mean(is.na(x))) > 0.7
+length(NAcols[NAcols == FALSE])               # number of variables that I finally use
+myTrainSet <- myTrainSet[NAcols==FALSE]          # restrict training set to those
+myValSet <- myValSet[colnames(myTrainSet)]      # restrict validation set to those
+```
+
+Use the transformations above on the testing set
+```{r testingTransform}
+testing <- testing[colnames(myTrainSet[,-58])]  # col 58 is the classe variable
+dim(myTrainSet); dim(myValSet); dim(testing)
+```
+
+Coerce data into the same type - especially necessary for Decision Tree and Random Forest 
+```{r dataCoercion}
+for (i in 1:length(testing) ) {
+    for(j in 1:length(myTrainSet)) {
+        if( length( grep(names(myTrainSet[i]), names(testing)[j]) ) == 1)  {
+            class(testing[j]) <- class(myTrainSet[i])
+        }      
+    }      
+}
+
+# To get the same class between testing and myTraining
+testing <- rbind(myTrainSet[2, -58] , testing)
+testing <- testing[-1,]
+dim(testing)
+```
+
+
+# 1. Prediction with Decision Trees
+```{r decTrees}
+set.seed(12345)
+modFitDT <- rpart(classe ~ ., data = myTrainSet, method = "class")
+```
+
+In order to view the decision tree use fancyRpartPlot()
+```{r plotDT, echo=FALSE}
+fancyRpartPlot(modFitDT)
+```
+
+Now evaluate the model using the validation set
+```{r predictDT}
+predictDT <- predict(modFitDT, newdata = myValSet, type = "class")
+conMatDT <- confusionMatrix(predictDT, myValSet$classe)
+conMatDT
+plot(conMatDT$table, col = conMatDT$byClass, main = paste("Decision Tree confusion matrix: accuracy =", round(conMatDT$overall['Accuracy'], 4)))
+```
+
+# 2. Prediction with Generalized Boosting Model
+```{r gbm}
+set.seed(12345)
+controlGBM <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+modFitGBM <- train(classe ~ ., data = myTrainSet, method = "gbm", trControl = controlGBM, verbose = FALSE)
+modFitGBM$finalModel
+```
+
+Predict the validation set and plot confusion matrix 
+```{r predictGBM}
+predictGBM <- predict(modFitGBM, newdata = myValSet)
+conMatGBM <- confusionMatrix(predictGBM, myValSet$classe)
+conMatGBM
+plot(conMatGBM$table, col = conMatGBM$byClass, main = paste("Generalized Boosting Model confusion matrix: accuracy =", round(conMatGBM$overall['Accuracy'], 4)))
+```
+
+# 3. Prediction with Random Forest
+```{r rf}
+set.seed(12345)
+modFitRF <- randomForest(classe ~ ., data = myTrainSet)
+```
+
+Predict using validation set and plot confusion matrix
+```{r predictRF}
+predictRF <- predict(modFitRF, newdata = myValSet)
+conMatRF <- confusionMatrix(predictRF, myValSet$classe)
+conMatRF
+plot(conMatRF$table, col = conMatRF$byClass, main = paste("Random Forest confusion matrix: accuracy =", round(conMatRF$overall['Accuracy'], 4)))
+``` 
+
+## Decision and prediction of the unseen test set
+```{r compareResults, echo = FALSE}
+modelName <- c("Decision Tree", "GBM", "Random Forest")
+modelAccuracies <- c(conMatDT$overall["Accuracy"],conMatGBM$overall["Accuracy"],conMatRF$overall["Accuracy"])
+resultMat <- data.frame(modelName,modelAccuracies)
+
+winner <- resultMat$modelName[resultMat$modelAccuracies==max(resultMat$modelAccuracies)]
+winningAcc <- resultMat[resultMat$modelName==as.character(winner),"modelAccuracies"]
+# Output the result statement to the command line
+cat("I will choose", as.character(winner), "as my prediction model since it yielded the highest accuracy of", as.character(round(winningAcc,3)), ". Thus, I expect an out-of-sample error of", as.character(round((1-winningAcc)*100,4)), "%.")
+```
+
+
+```{r predUnseenData}
+
+predictTestCases <- predict(modFitRF, newdata = testing)
+as.character(predictTestCases)
+```
